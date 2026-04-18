@@ -220,6 +220,15 @@
 
             // นำบรรทัด useEffect สำหรับ localStorage ออกได้เลยเพราะฝัง URL คงที่แล้ว
             
+            // Auto compute Age_Group from Age
+            useEffect(() => {
+                if(formData.Age) {
+                    const a = Number(formData.Age);
+                    const g = a < 40 ? "<40" : a < 50 ? "40-49" : a < 60 ? "50-59" : a < 70 ? "60-69" : ">=70";
+                    setFormData(p => ({...p, Age_Group: g}));
+                }
+            }, [formData.Age]);
+
             // Auto calculate BMI
             useEffect(() => {
                 if(formData.Weight && formData.Height) {
@@ -452,12 +461,9 @@
                             <QC name="Gender" value={formData.Gender} options={[{val:"ชาย",label:"ชาย"},{val:"หญิง",label:"หญิง"}]} />
 
                             <label className="block font-bold mt-4">2. อายุ (ปี)</label>
-                            <div className="flex gap-4">
-                                <input type="number" name="Age" value={formData.Age||""} onChange={hC} className="w-24 p-3 border rounded-xl text-center" placeholder="ปี" />
-                                <div className="flex-1">
-                                    <QC name="Age_Group" value={formData.Age_Group} options={[{val:"<40",label:"น้อยกว่า 40 ปี"},{val:"40-49",label:"40–49 ปี"},{val:"50-59",label:"50–59 ปี"},{val:"60-69",label:"60–69 ปี"},{val:">=70",label:"70 ปีขึ้นไป"}]} />
-                                </div>
-                            </div>
+                            <input type="number" name="Age" value={formData.Age||""} onChange={hC}
+                                className="w-32 p-3 border-2 border-gray-300 rounded-xl text-center text-lg focus:border-blue-500 focus:outline-none"
+                                placeholder="ปี" min="18" max="120" />
 
                             <label className="block font-bold mt-4">3. ระดับการศึกษาสูงสุด</label>
                             <QC name="Education" value={formData.Education} options={[
@@ -620,66 +626,411 @@
                 if (isLoadingDash) return <div className="p-12 text-center text-gray-500">กำลังประมวลผล...</div>;
                 if (!dashboardData.length) return (
                     <div className="p-12 text-center space-y-4">
-                        <p className="text-gray-500">ยังไม่มีข้อมูล หรือยังไม่ได้โหลด</p>
-                        <button onClick={fetchDash} className="px-6 py-2 bg-blue-600 text-white rounded-xl font-bold">โหลดข้อมูล</button>
+                        <p className="text-gray-500 mb-2">ยังไม่มีข้อมูล หรือยังไม่ได้โหลด</p>
+                        <button onClick={fetchDash} className="px-6 py-3 bg-blue-600 text-white rounded-xl font-bold">โหลดข้อมูล</button>
                     </div>
                 );
 
                 const n = dashboardData.length;
-                const getMean = (prefix, count) => {
-                    let total = 0, validN = 0;
-                    dashboardData.forEach(r => {
-                        let sum = 0;
-                        for(let i=1; i<=count; i++) sum += Number(r[`${prefix}_${i}`] || 0);
-                        if(sum > 0) { total += (sum/count); validN++; }
-                    });
-                    return validN ? (total/validN).toFixed(2) : 0;
+                const d = dashboardData;
+
+                // ── helpers ──────────────────────────────────────────────
+                const num = v => Number(v) || 0;
+                const pct = (c, t) => t > 0 ? ((c / t) * 100).toFixed(2) : "0.00";
+                const freq = (field, val) => d.filter(r => r[field] === val).length;
+
+                const calcStats = (values) => {
+                    const v = values.filter(x => typeof x === "number" && !isNaN(x) && x > 0);
+                    if (!v.length) return { mean: "-", sd: "-", min: "-", max: "-", median: "-" };
+                    const mean = v.reduce((a, b) => a + b, 0) / v.length;
+                    const sd = Math.sqrt(v.reduce((s, x) => s + (x - mean) ** 2, 0) / v.length);
+                    const sorted = [...v].sort((a, b) => a - b);
+                    const mid = Math.floor(sorted.length / 2);
+                    const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+                    return { mean: mean.toFixed(2), sd: sd.toFixed(2), min: Math.min(...v).toFixed(0), max: Math.max(...v).toFixed(0), median: median.toFixed(2) };
                 };
 
-                const correctKeys = [1,2,3,4,6,7,8,9,10,11,12,14,15,17,18,19,20];
-                const falseKeys = [5,13,16];
-                let totalKnow = 0;
-                dashboardData.forEach(r => {
-                    let score = 0;
-                    correctKeys.forEach(k => { if(r[`Know_${k}`] === "ถูก") score++; });
-                    falseKeys.forEach(k => { if(r[`Know_${k}`] === "ผิด") score++; });
-                    totalKnow += score;
-                });
-                const avgKnow = ((totalKnow / n) / 20 * 100).toFixed(1);
-                const ldlRows = dashboardData.filter(d => d.Lab_LDL);
-                const avgLDL = ldlRows.length
-                    ? (ldlRows.reduce((acc, r) => acc + Number(r.Lab_LDL), 0) / ldlRows.length).toFixed(1)
-                    : "-";
+                const sumF = (r, fields) => fields.reduce((s, f) => s + num(r[f]), 0);
 
+                const levelOf = (score, max) => {
+                    const p = score / max;
+                    if (p >= 0.735) return "ดี";
+                    if (p >= 0.47) return "ปานกลาง";
+                    return "ต้องปรับปรุง";
+                };
+
+                const pearsonR = (xs, ys) => {
+                    const pairs = xs.map((x, i) => [num(x), num(ys[i])]).filter(([x, y]) => x > 0 && y > 0);
+                    if (pairs.length < 5) return { r: "-", p: "-" };
+                    const n2 = pairs.length;
+                    const mx = pairs.reduce((a, [x]) => a + x, 0) / n2;
+                    const my = pairs.reduce((a, [, y]) => a + y, 0) / n2;
+                    const num_ = pairs.reduce((s, [x, y]) => s + (x - mx) * (y - my), 0);
+                    const den = Math.sqrt(pairs.reduce((s, [x]) => s + (x - mx) ** 2, 0) * pairs.reduce((s, [, y]) => s + (y - my) ** 2, 0));
+                    if (!den) return { r: "0.000", p: "n.s." };
+                    const r = num_ / den;
+                    const t = r * Math.sqrt(n2 - 2) / Math.sqrt(Math.max(1e-10, 1 - r * r));
+                    const p2 = Math.abs(t) > 2.576 ? "< .01**" : Math.abs(t) > 1.960 ? "< .05*" : "n.s.";
+                    return { r: r.toFixed(3), p: p2 };
+                };
+
+                // ── Table component ───────────────────────────────────────
+                const Tbl = ({ title, headers, rows, note }) => (
+                    <div className="mb-6">
+                        {title && <h3 className="font-bold text-gray-800 mb-2 text-sm md:text-base">{title}</h3>}
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-xs md:text-sm border-collapse">
+                                <thead>
+                                    <tr className="bg-blue-900 text-white">
+                                        {headers.map((h, i) => <th key={i} className="p-2 text-left border border-blue-800 whitespace-nowrap">{h}</th>)}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {rows.map((row, i) => (
+                                        <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-blue-50"}>
+                                            {row.map((cell, j) => (
+                                                <td key={j} className={`p-2 border border-gray-200 ${j > 0 ? "text-center" : "text-left"}`}>{cell}</td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        {note && <p className="text-xs text-gray-500 mt-1">{note}</p>}
+                    </div>
+                );
+
+                // ── Age ───────────────────────────────────────────────────
+                const ages = d.map(r => num(r.Age)).filter(a => a > 0);
+                const ageSt = calcStats(ages);
+                const ageGroups = [
+                    { label: "น้อยกว่า 40 ปี", fn: a => a < 40 },
+                    { label: "40–49 ปี",        fn: a => a >= 40 && a < 50 },
+                    { label: "50–59 ปี",        fn: a => a >= 50 && a < 60 },
+                    { label: "60–69 ปี",        fn: a => a >= 60 && a < 70 },
+                    { label: "70 ปีขึ้นไป",    fn: a => a >= 70 },
+                ];
+
+                // ── Education groups ──────────────────────────────────────
+                const eduGroups = [
+                    { label: "ไม่ได้รับการศึกษา / ประถมศึกษา", vals: ["ไม่ได้รับการศึกษา", "ประถมศึกษา"] },
+                    { label: "มัธยมศึกษา / ปวช. / ปวส.",        vals: ["มัธยมศึกษา", "ปวช./ปวส."] },
+                    { label: "อนุปริญญา / ปริญญาตรี",           vals: ["อนุปริญญา", "ปริญญาตรี"] },
+                    { label: "ปริญญาโท / ปริญญาเอก",            vals: ["ปริญญาโท", "ปริญญาเอก"] },
+                ];
+
+                // ── Behavior scores ───────────────────────────────────────
+                const flds = (prefix, from, to) => Array.from({ length: to - from + 1 }, (_, i) => `${prefix}_${from + i}`);
+                const dietS  = d.map(r => sumF(r, flds("Diet", 1, 12)));
+                const exS    = d.map(r => sumF(r, flds("Ex", 13, 22)));
+                const smokeS = d.map(r => r.Smoke_Status === "ไม่เคย" || r.Smoke_Status === "เลิกแล้ว" ? 40 : sumF(r, flds("Smoke", 23, 30)));
+                const alcS   = d.map(r => r.Alc_Status === "ไม่เคย" || r.Alc_Status === "เลิกแล้ว" ? 50 : sumF(r, flds("Alc", 31, 40)));
+                const totalBhS = dietS.map((_, i) => dietS[i] + exS[i] + smokeS[i] + alcS[i]);
+
+                const bhCounts = { ดี: totalBhS.filter(s => s >= 147).length, ปาน: totalBhS.filter(s => s >= 94 && s < 147).length, ต้อง: totalBhS.filter(s => s < 94).length };
+
+                // ── Adherence scores ──────────────────────────────────────
+                const medS  = d.map(r => sumF(r, flds("Med", 1, 12)));
+                const apptS = d.map(r => sumF(r, flds("Appt", 13, 20)));
+                const lifeS = d.map(r => sumF(r, flds("Life", 21, 30)));
+                const totalAdhS = medS.map((_, i) => medS[i] + apptS[i] + lifeS[i]);
+                const adhCounts = { ดี: totalAdhS.filter(s => s >= 111).length, ปาน: totalAdhS.filter(s => s >= 71 && s < 111).length, ต้อง: totalAdhS.filter(s => s < 71).length };
+
+                // ── Knowledge ─────────────────────────────────────────────
+                const corrKeys = [1,2,3,4,6,7,8,9,10,11,12,14,15,17,18,19,20];
+                const falsKeys = [5,13,16];
+                const knowS = d.map(r => {
+                    let s = 0;
+                    corrKeys.forEach(k => { if (r[`Know_${k}`] === "ถูก") s++; });
+                    falsKeys.forEach(k => { if (r[`Know_${k}`] === "ผิด") s++; });
+                    return s;
+                });
+                const knowCnt = { ดี: knowS.filter(s => s >= 15).length, ปาน: knowS.filter(s => s >= 10 && s < 15).length, ต้อง: knowS.filter(s => s < 10).length };
+
+                // ── Perception ────────────────────────────────────────────
+                const percSuscS = d.map(r => sumF(r, flds("Perc_Susc", 1, 5)));
+                const percSevS  = d.map(r => sumF(r, flds("Perc_Sev", 6, 10)));
+                const percBenS  = d.map(r => sumF(r, flds("Perc_Ben", 11, 15)));
+                const percBarS  = d.map(r => sumF(r, flds("Perc_Bar", 16, 20)));
+                const percEffS  = d.map(r => sumF(r, flds("Perc_Eff", 21, 25)));
+                const totalPercS = percSuscS.map((_, i) => percSuscS[i] + percSevS[i] + percBenS[i] + percBarS[i] + percEffS[i]);
+
+                // ── Social support ────────────────────────────────────────
+                const suppEmoS  = d.map(r => sumF(r, flds("Supp_Emo", 1, 5)));
+                const suppAppS  = d.map(r => sumF(r, flds("Supp_App", 6, 10)));
+                const suppInfoS = d.map(r => sumF(r, flds("Supp_Info", 11, 15)));
+                const suppInstS = d.map(r => sumF(r, flds("Supp_Inst", 16, 20)));
+                const totalSuppS = suppEmoS.map((_, i) => suppEmoS[i] + suppAppS[i] + suppInfoS[i] + suppInstS[i]);
+                const suppCnt = { สูง: totalSuppS.filter(s => s >= 74).length, ปาน: totalSuppS.filter(s => s >= 47 && s < 74).length, ต่ำ: totalSuppS.filter(s => s < 47).length };
+
+                // ── Lab stats ─────────────────────────────────────────────
+                const tcSt  = calcStats(d.map(r => num(r.Lab_TC)).filter(v => v > 0));
+                const ldlSt = calcStats(d.map(r => num(r.Lab_LDL)).filter(v => v > 0));
+                const hdlSt = calcStats(d.map(r => num(r.Lab_HDL)).filter(v => v > 0));
+                const tgSt  = calcStats(d.map(r => num(r.Lab_TG)).filter(v => v > 0));
+
+                const ldlArr = d.map(r => num(r.Lab_LDL));
+                const hdlArr = d.map(r => num(r.Lab_HDL));
+                const tgArr  = d.map(r => num(r.Lab_TG));
+                const tcArr  = d.map(r => num(r.Lab_TC));
+
+                // ── Risk-based LDL control table ──────────────────────────
+                const riskGoal = { "ต่ำ": 116, "ปานกลาง": 100, "สูง": 70, "สูงมาก": 55 };
+                const riskRows = Object.entries(riskGoal).map(([risk, goal]) => {
+                    const grp = d.filter(r => r.CV_Risk === risk);
+                    const ok  = grp.filter(r => num(r.Lab_LDL) > 0 && num(r.Lab_LDL) <= goal).length;
+                    const bad = grp.filter(r => num(r.Lab_LDL) > goal).length;
+                    return [`ความเสี่ยง${risk}`, `< ${goal} mg/dL`, grp.length, `${ok} (${pct(ok, grp.length)})`, `${bad} (${pct(bad, grp.length)})`];
+                });
+                const totalOk  = d.filter(r => r.Control_Status === "ตามเป้า").length;
+                const totalBad = d.filter(r => r.Control_Status === "ไม่ตามเป้า").length;
+
+                // ── Correlation rows ──────────────────────────────────────
+                const corrDefs = [
+                    ["พฤติกรรมการบริโภคอาหาร",              dietS],
+                    ["พฤติกรรมการออกกำลังกาย",               exS],
+                    ["พฤติกรรมการสูบบุหรี่",                 smokeS],
+                    ["พฤติกรรมการดื่มแอลกอฮอล์",             alcS],
+                    ["รวมพฤติกรรมสุขภาพ",                   totalBhS],
+                    ["ความร่วมมือในการใช้ยา",                medS],
+                    ["ความต่อเนื่องในการมาพบแพทย์",          apptS],
+                    ["การปฏิบัติตามคำแนะนำด้านวิถีชีวิต",   lifeS],
+                    ["รวมการปฏิบัติตามคำแนะนำ",              totalAdhS],
+                    ["ความรู้เกี่ยวกับโรค",                  knowS],
+                    ["การรับรู้โอกาสเสี่ยง",                 percSuscS],
+                    ["การรับรู้ความรุนแรง",                  percSevS],
+                    ["การรับรู้ประโยชน์",                    percBenS],
+                    ["การรับรู้อุปสรรค",                     percBarS],
+                    ["Self-efficacy",                          percEffS],
+                    ["รวมแรงสนับสนุนทางสังคม",               totalSuppS],
+                ];
+
+                // ── Render ────────────────────────────────────────────────
                 return (
-                    <div className="space-y-4">
-                        <div className="bg-white p-6 rounded-xl shadow flex justify-between items-center">
-                            <h2 className="text-xl font-bold">สรุปผลเบื้องต้น</h2>
+                    <div className="space-y-6 pb-16">
+
+                        {/* Header */}
+                        <div className="bg-blue-900 text-white p-5 rounded-2xl shadow flex justify-between items-center">
+                            <div>
+                                <h1 className="text-xl md:text-2xl font-bold">บทที่ 4 ผลการวิจัย</h1>
+                                <p className="text-blue-300 text-xs mt-1">คำนวณอัตโนมัติจากข้อมูลจริง</p>
+                            </div>
                             <div className="flex items-center gap-3">
-                                <button onClick={fetchDash} className="px-3 py-1 bg-blue-100 text-blue-700 rounded-lg text-sm font-bold">โหลดใหม่</button>
-                                <div className="text-center bg-blue-100 p-3 rounded-lg"><p className="text-xs">N (คน)</p><p className="text-3xl font-black text-blue-800">{n}</p></div>
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="bg-white p-4 rounded-xl shadow">
-                                <h3 className="font-bold border-b pb-2 mb-2">ค่าเฉลี่ยตัวแปร (เต็ม 5)</h3>
-                                <p>กินอาหาร: <span className="font-bold text-blue-600">{getMean('Diet',12)}</span></p>
-                                <p>ออกกำลัง: <span className="font-bold text-blue-600">{getMean('Ex',10)}</span></p>
-                                <p>กินยา: <span className="font-bold text-green-600">{getMean('Med',12)}</span></p>
-                                <p>สนับสนุน (อารมณ์): <span className="font-bold text-pink-600">{getMean('Supp_Emo',5)}</span></p>
-                            </div>
-                            <div className="bg-white p-4 rounded-xl shadow">
-                                <h3 className="font-bold border-b pb-2 mb-2">ความรู้และห้องปฏิบัติการ</h3>
-                                <div className="mb-4">
-                                    <p className="text-sm">คะแนนความรู้เฉลี่ย</p>
-                                    <p className="text-2xl font-bold text-teal-600">{avgKnow}%</p>
-                                </div>
-                                <div>
-                                    <p className="text-sm">LDL เฉลี่ยรวม (mg/dL)</p>
-                                    <p className="text-2xl font-bold text-red-600">{avgLDL}</p>
+                                <button onClick={fetchDash} className="px-3 py-2 bg-blue-700 rounded-xl text-sm font-bold">โหลดใหม่</button>
+                                <div className="text-center bg-blue-800 border border-blue-600 px-4 py-2 rounded-xl">
+                                    <p className="text-xs text-blue-300">N (ราย)</p>
+                                    <p className="text-3xl font-black">{n}</p>
                                 </div>
                             </div>
                         </div>
+
+                        {/* Intro */}
+                        <div className="bg-white p-4 rounded-xl border shadow-sm text-sm text-gray-700 leading-relaxed">
+                            การวิจัยเรื่อง "ปัจจัยด้านพฤติกรรมสุขภาพและการปฏิบัติตามคำแนะนำทางการแพทย์ที่มีความสัมพันธ์กับระดับไขมันในเลือดของผู้ป่วยภาวะไขมันในเลือดผิดปกติ โรงพยาบาลร้อยเอ็ด"
+                            เก็บข้อมูลจากกลุ่มตัวอย่างจำนวน 240 ราย ระหว่างเดือนกุมภาพันธ์ถึงมิถุนายน พ.ศ. 2569
+                            ได้รับแบบสอบถามคืนครบถ้วนและผ่านเกณฑ์การวิเคราะห์ทั้งสิ้น <strong>{n}</strong> ราย
+                            คิดเป็นร้อยละ <strong>{pct(n, 240)}</strong> ของกลุ่มตัวอย่างทั้งหมด
+                            โดยมีแบบสอบถามที่ตอบไม่ครบและถูกคัดออก <strong>{240 - n < 0 ? 0 : 240 - n}</strong> ราย
+                        </div>
+
+                        {/* ตอนที่ 1 */}
+                        <div className="rounded-xl overflow-hidden shadow">
+                            <div className="bg-blue-800 text-white p-4"><h2 className="text-lg font-bold">ตอนที่ 1 ปัจจัยส่วนบุคคลและข้อมูลทางคลินิก</h2></div>
+                            <div className="bg-white p-4 space-y-4">
+
+                                <Tbl title={`ตารางที่ 1 จำนวนและร้อยละของปัจจัยส่วนบุคคล (n = ${n})`}
+                                    headers={["ปัจจัยส่วนบุคคล","จำนวน (ราย)","ร้อยละ"]}
+                                    rows={[
+                                        ["1. เพศ","",""],
+                                        ["   ชาย", freq("Gender","ชาย"), pct(freq("Gender","ชาย"), n)],
+                                        ["   หญิง", freq("Gender","หญิง"), pct(freq("Gender","หญิง"), n)],
+                                        ["   รวม", n, "100.00"],
+                                        ["2. อายุ","",""],
+                                        ...ageGroups.map(g => { const c = ages.filter(g.fn).length; return [`   ${g.label}`, c, pct(c, ages.length || 1)]; }),
+                                        ["   รวม", ages.length, "100.00"],
+                                        [`   อายุเฉลี่ย ${ageSt.mean} ปี (S.D. = ${ageSt.sd}, Min = ${ageSt.min}, Max = ${ageSt.max})`, "", ""],
+                                        ["3. ระดับการศึกษา","",""],
+                                        ...eduGroups.map(g => { const c = d.filter(r => g.vals.includes(r.Education)).length; return [`   ${g.label}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                        ["4. อาชีพหลัก","",""],
+                                        ...[["เกษตรกร","เกษตรกร"],["รับจ้าง","รับจ้างทั่วไป / ใช้แรงงาน"],["ค้าขาย","ค้าขาย / ธุรกิจส่วนตัว"],["รับราชการ","รับราชการ / พนักงานบริษัท"],["แม่บ้าน","แม่บ้าน / พ่อบ้าน"],["เกษียณ","เกษียณอายุ"],["ว่างงาน","ว่างงาน"],["อื่นๆ","อื่น ๆ"]].map(([v, l]) => { const c = freq("Occupation", v); return [`   ${l}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                        ["5. รายได้ครัวเรือนเฉลี่ยต่อเดือน","",""],
+                                        ...[["<5k","น้อยกว่า 5,000 บาท"],["5-10k","5,000–10,000 บาท"],["10-20k","10,001–20,000 บาท"],["20-30k","20,001–30,000 บาท"],[">30k","มากกว่า 30,000 บาท"]].map(([v, l]) => { const c = freq("Income", v); return [`   ${l}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                        ["6. สถานภาพสมรส","",""],
+                                        ...[["โสด","โสด"],["สมรส","สมรส / อยู่ด้วยกัน"],["หม้าย","หม้าย / หย่าร้าง / แยกกันอยู่"]].map(([v, l]) => { const c = freq("Marital", v); return [`   ${l}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                        ["7. สิทธิการรักษาพยาบาล","",""],
+                                        ...[["บัตรทอง","บัตรทอง (หลักประกันสุขภาพถ้วนหน้า)"],["ประกันสังคม","ประกันสังคม"],["ข้าราชการ","สวัสดิการข้าราชการ / รัฐวิสาหกิจ"],["จ่ายเอง","ชำระเงินเอง / อื่น ๆ"]].map(([v, l]) => { const c = freq("Insurance", v); return [`   ${l}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                    ]}
+                                />
+
+                                <Tbl title={`ตารางที่ 2 จำนวนและร้อยละของข้อมูลทางคลินิก (n = ${n})`}
+                                    headers={["ข้อมูลทางคลินิก","จำนวน (ราย)","ร้อยละ"]}
+                                    rows={[
+                                        ["1. ดัชนีมวลกาย (BMI)","",""],
+                                        ...[["น้ำหนักต่ำกว่าเกณฑ์ (< 18.5)","น้ำหนักต่ำกว่าเกณฑ์ (BMI < 18.5)"],["น้ำหนักปกติ (18.5–22.9)","น้ำหนักปกติ (BMI 18.5–22.9)"],["น้ำหนักเกิน (23.0–24.9)","น้ำหนักเกิน (BMI 23.0–24.9)"],["โรคอ้วนระดับ 1 (25.0–29.9)","โรคอ้วนระดับ 1 (BMI 25.0–29.9)"],["โรคอ้วนระดับ 2 (≥ 30.0)","โรคอ้วนระดับ 2 (BMI ≥ 30.0)"]].map(([v, l]) => { const c = freq("BMI_Group", v); return [`   ${l}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                        [` BMI เฉลี่ย ${calcStats(d.map(r => num(r.BMI)).filter(v => v > 0)).mean} กก./ม² (S.D. = ${calcStats(d.map(r => num(r.BMI)).filter(v => v > 0)).sd})`, "", ""],
+                                        ["2. ระยะเวลาที่ได้รับการวินิจฉัย","",""],
+                                        ...[["<1 ปี","น้อยกว่า 1 ปี"],["1-5 ปี","1–5 ปี"],["6-10 ปี","6–10 ปี"],[">10 ปี","มากกว่า 10 ปี"]].map(([v, l]) => { const c = freq("Duration", v); return [`   ${l}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                        ["3. โรคร่วม (ตอบได้มากกว่า 1 ข้อ)","",""],
+                                        ...["เบาหวาน","ความดันโลหิตสูง","โรคหัวใจ","หลอดเลือดสมอง","ไม่มี"].map(v => { const c = d.filter(r => Array.isArray(r.Comorbidity) ? r.Comorbidity.includes(v) : String(r.Comorbidity || "").includes(v)).length; return [`   ${v}`, c, pct(c, n)]; }),
+                                        ["4. ระดับความเสี่ยงต่อโรคหัวใจและหลอดเลือด (RCPT 2567)","",""],
+                                        ...["ต่ำ","ปานกลาง","สูง","สูงมาก"].map(v => { const c = freq("CV_Risk", v); return [`   ความเสี่ยง${v}`, c, pct(c, n)]; }),
+                                        ["   รวม", n, "100.00"],
+                                    ]}
+                                />
+                            </div>
+                        </div>
+
+                        {/* ตอนที่ 2 */}
+                        <div className="rounded-xl overflow-hidden shadow">
+                            <div className="bg-green-800 text-white p-4"><h2 className="text-lg font-bold">ตอนที่ 2 ระดับพฤติกรรมสุขภาพ การปฏิบัติตามคำแนะนำทางการแพทย์ ความรู้และการรับรู้ และแรงสนับสนุนทางสังคม</h2></div>
+                            <div className="bg-white p-4 space-y-4">
+
+                                <Tbl title={`ตารางที่ 3 ค่าเฉลี่ย ส่วนเบี่ยงเบนมาตรฐาน และระดับพฤติกรรมสุขภาพ (n = ${n})`}
+                                    headers={["ด้านพฤติกรรมสุขภาพ","คะแนนเต็ม","Mean","S.D.","ระดับ"]}
+                                    rows={[
+                                        [() => { const st = calcStats(dietS); return ["1. พฤติกรรมการบริโภคอาหาร", 60, st.mean, st.sd, levelOf(Number(st.mean), 60)]; }][0](),
+                                        [() => { const st = calcStats(exS);   return ["2. พฤติกรรมการออกกำลังกาย",  50, st.mean, st.sd, levelOf(Number(st.mean), 50)]; }][0](),
+                                        [() => { const st = calcStats(smokeS);return ["3. พฤติกรรมการสูบบุหรี่",   40, st.mean, st.sd, levelOf(Number(st.mean), 40)]; }][0](),
+                                        [() => { const st = calcStats(alcS);  return ["4. พฤติกรรมการดื่มแอลกอฮอล์",50, st.mean, st.sd, levelOf(Number(st.mean), 50)]; }][0](),
+                                        [() => { const st = calcStats(totalBhS); return ["รวมพฤติกรรมสุขภาพ", 200, st.mean, st.sd, levelOf(Number(st.mean), 200)]; }][0](),
+                                    ]}
+                                    note="เกณฑ์การแปลผล: ระดับดี = 147–200 / ระดับปานกลาง = 94–146 / ระดับต้องปรับปรุง = 40–93 คะแนน"
+                                />
+
+                                <Tbl title={`ตารางที่ 4 จำนวนและร้อยละของระดับพฤติกรรมสุขภาพโดยรวม (n = ${n})`}
+                                    headers={["ระดับ","ช่วงคะแนน","จำนวน (ราย)","ร้อยละ"]}
+                                    rows={[
+                                        ["ระดับดี","147–200", bhCounts.ดี, pct(bhCounts.ดี, n)],
+                                        ["ระดับปานกลาง","94–146", bhCounts.ปาน, pct(bhCounts.ปาน, n)],
+                                        ["ระดับต้องปรับปรุง","40–93", bhCounts.ต้อง, pct(bhCounts.ต้อง, n)],
+                                        ["รวม","", n, "100.00"],
+                                    ]}
+                                />
+
+                                <Tbl title={`ตารางที่ 5 ค่าเฉลี่ย ส่วนเบี่ยงเบนมาตรฐาน และระดับการปฏิบัติตามคำแนะนำทางการแพทย์ (n = ${n})`}
+                                    headers={["ด้านการปฏิบัติตามคำแนะนำ","คะแนนเต็ม","Mean","S.D.","ระดับ"]}
+                                    rows={[
+                                        [() => { const st = calcStats(medS);  return ["1. ความร่วมมือในการใช้ยา", 60, st.mean, st.sd, levelOf(Number(st.mean), 60)]; }][0](),
+                                        [() => { const st = calcStats(apptS); return ["2. ความต่อเนื่องในการมาพบแพทย์ตามนัด", 40, st.mean, st.sd, levelOf(Number(st.mean), 40)]; }][0](),
+                                        [() => { const st = calcStats(lifeS); return ["3. การปฏิบัติตามคำแนะนำด้านการปรับเปลี่ยนวิถีชีวิต", 50, st.mean, st.sd, levelOf(Number(st.mean), 50)]; }][0](),
+                                        [() => { const st = calcStats(totalAdhS); return ["รวมการปฏิบัติตามคำแนะนำ", 150, st.mean, st.sd, levelOf(Number(st.mean), 150)]; }][0](),
+                                    ]}
+                                    note="เกณฑ์การแปลผล: ระดับดี = 111–150 / ระดับปานกลาง = 71–110 / ระดับต้องปรับปรุง = 30–70 คะแนน"
+                                />
+
+                                <Tbl title={`ตารางที่ 6 จำนวนและร้อยละของระดับการปฏิบัติตามคำแนะนำทางการแพทย์โดยรวม (n = ${n})`}
+                                    headers={["ระดับ","ช่วงคะแนน","จำนวน (ราย)","ร้อยละ"]}
+                                    rows={[
+                                        ["ระดับดี","111–150", adhCounts.ดี, pct(adhCounts.ดี, n)],
+                                        ["ระดับปานกลาง","71–110", adhCounts.ปาน, pct(adhCounts.ปาน, n)],
+                                        ["ระดับต้องปรับปรุง","30–70", adhCounts.ต้อง, pct(adhCounts.ต้อง, n)],
+                                        ["รวม","", n, "100.00"],
+                                    ]}
+                                />
+
+                                {[() => { const st = calcStats(knowS); return (
+                                    <Tbl key="t7" title={`ตารางที่ 7–8 ความรู้เกี่ยวกับโรคและการแจกแจงระดับความรู้ (n = ${n})`}
+                                        headers={["ระดับความรู้","ช่วงคะแนน","จำนวน (ราย)","ร้อยละ", "Mean", "S.D."]}
+                                        rows={[
+                                            ["ระดับดี","15–20", knowCnt.ดี, pct(knowCnt.ดี, n), st.mean, st.sd],
+                                            ["ระดับปานกลาง","10–14", knowCnt.ปาน, pct(knowCnt.ปาน, n), "", ""],
+                                            ["ระดับต้องปรับปรุง","0–9", knowCnt.ต้อง, pct(knowCnt.ต้อง, n), "", ""],
+                                            ["รวม","", n, "100.00", "", ""],
+                                        ]}
+                                        note={`คะแนนเต็ม 20 คะแนน เกณฑ์: ดี = 15–20 / ปานกลาง = 10–14 / ต้องปรับปรุง = 0–9`}
+                                    />
+                                ); }][0]()}
+
+                                <Tbl title={`ตารางที่ 9 ค่าเฉลี่ย ส่วนเบี่ยงเบนมาตรฐาน และระดับการรับรู้ด้านสุขภาพ (n = ${n})`}
+                                    headers={["ด้านการรับรู้","คะแนนเต็ม","Mean","S.D.","ระดับ"]}
+                                    rows={[
+                                        [() => { const st = calcStats(percSuscS); return ["1. การรับรู้โอกาสเสี่ยงต่อโรค", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(percSevS);  return ["2. การรับรู้ความรุนแรงของโรค", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(percBenS);  return ["3. การรับรู้ประโยชน์ของการปฏิบัติ", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(percBarS);  return ["4. การรับรู้อุปสรรคของการปฏิบัติ", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(percEffS);  return ["5. การรับรู้ความสามารถของตนเอง (Self-efficacy)", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(totalPercS); return ["รวมการรับรู้ด้านสุขภาพ", 125, st.mean, st.sd, Number(st.mean) >= 92 ? "สูง" : Number(st.mean) >= 59 ? "ปานกลาง" : "ต่ำ"]; }][0](),
+                                    ]}
+                                    note="เกณฑ์การแปลผล: ระดับสูง = 92–125 / ระดับปานกลาง = 59–91 / ระดับต่ำ = 25–58 คะแนน"
+                                />
+
+                                <Tbl title={`ตารางที่ 10 ค่าเฉลี่ย ส่วนเบี่ยงเบนมาตรฐาน และระดับแรงสนับสนุนทางสังคม (n = ${n})`}
+                                    headers={["ด้านแรงสนับสนุน","คะแนนเต็ม","Mean","S.D.","ระดับ"]}
+                                    rows={[
+                                        [() => { const st = calcStats(suppEmoS);  return ["1. การสนับสนุนด้านอารมณ์", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(suppAppS);  return ["2. การสนับสนุนด้านการประเมิน", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(suppInfoS); return ["3. การสนับสนุนด้านข้อมูลข่าวสาร", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(suppInstS); return ["4. การสนับสนุนด้านสิ่งของและบริการ", 25, st.mean, st.sd, levelOf(Number(st.mean), 25)]; }][0](),
+                                        [() => { const st = calcStats(totalSuppS); return ["รวมแรงสนับสนุนทางสังคม", 100, st.mean, st.sd, Number(st.mean) >= 74 ? "สูง" : Number(st.mean) >= 47 ? "ปานกลาง" : "ต่ำ"]; }][0](),
+                                    ]}
+                                    note="เกณฑ์การแปลผล: ระดับสูง = 74–100 / ระดับปานกลาง = 47–73 / ระดับต่ำ = 20–46 คะแนน"
+                                />
+
+                                <Tbl title={`ตารางที่ 11 จำนวนและร้อยละของระดับแรงสนับสนุนทางสังคมโดยรวม (n = ${n})`}
+                                    headers={["ระดับ","ช่วงคะแนน","จำนวน (ราย)","ร้อยละ"]}
+                                    rows={[
+                                        ["ระดับสูง","74–100", suppCnt.สูง, pct(suppCnt.สูง, n)],
+                                        ["ระดับปานกลาง","47–73", suppCnt.ปาน, pct(suppCnt.ปาน, n)],
+                                        ["ระดับต่ำ","20–46", suppCnt.ต่ำ, pct(suppCnt.ต่ำ, n)],
+                                        ["รวม","", n, "100.00"],
+                                    ]}
+                                />
+                            </div>
+                        </div>
+
+                        {/* ตอนที่ 3 */}
+                        <div className="rounded-xl overflow-hidden shadow">
+                            <div className="bg-red-800 text-white p-4"><h2 className="text-lg font-bold">ตอนที่ 3 สถานการณ์ระดับไขมันในเลือด</h2></div>
+                            <div className="bg-white p-4 space-y-4">
+
+                                <Tbl title={`ตารางที่ 12 ค่าเฉลี่ย ส่วนเบี่ยงเบนมาตรฐาน และการแจกแจงระดับไขมันในเลือด (n = ${n})`}
+                                    headers={["ตัวชี้วัด","Mean (mg/dL)","S.D.","Median","Min","Max"]}
+                                    rows={[
+                                        ["Total Cholesterol", tcSt.mean, tcSt.sd, tcSt.median, tcSt.min, tcSt.max],
+                                        ["LDL-Cholesterol",   ldlSt.mean, ldlSt.sd, ldlSt.median, ldlSt.min, ldlSt.max],
+                                        ["HDL-Cholesterol",   hdlSt.mean, hdlSt.sd, hdlSt.median, hdlSt.min, hdlSt.max],
+                                        ["Triglycerides",     tgSt.mean, tgSt.sd, tgSt.median, tgSt.min, tgSt.max],
+                                    ]}
+                                />
+
+                                <Tbl title={`ตารางที่ 14 การบรรลุเป้าหมาย LDL-C จำแนกตามระดับความเสี่ยง (n = ${n})`}
+                                    headers={["ระดับความเสี่ยง","เป้าหมาย LDL-C","n","บรรลุเป้า n (%)","ไม่บรรลุเป้า n (%)"]}
+                                    rows={[
+                                        ...riskRows,
+                                        ["รวม","", n, `${totalOk} (${pct(totalOk, n)})`, `${totalBad} (${pct(totalBad, n)})`],
+                                    ]}
+                                />
+                            </div>
+                        </div>
+
+                        {/* ตอนที่ 4 */}
+                        <div className="rounded-xl overflow-hidden shadow">
+                            <div className="bg-purple-900 text-white p-4"><h2 className="text-lg font-bold">ตอนที่ 4 ความสัมพันธ์ระหว่างตัวแปรอิสระกับระดับไขมันในเลือด</h2></div>
+                            <div className="bg-white p-4 space-y-4">
+
+                                <Tbl title={`ตารางที่ 16 ความสัมพันธ์ระหว่างตัวแปรอิสระกับระดับไขมันในเลือด (n = ${n})`}
+                                    headers={["ตัวแปร","r (TC)","p","r (LDL)","p","r (HDL)","p","r (TG)","p"]}
+                                    rows={corrDefs.map(([label, scores]) => {
+                                        const labs = [tcArr, ldlArr, hdlArr, tgArr];
+                                        return [label, ...labs.flatMap(lab => { const c = pearsonR(scores, lab); return [c.r, c.p]; })];
+                                    })}
+                                    note="Pearson r; ค่า p ใช้ approximation จาก t = r√(n−2)/√(1−r²) — *p < .05 / **p < .01"
+                                />
+
+                                <div className="bg-amber-50 border border-amber-300 p-4 rounded-xl text-sm text-amber-800">
+                                    <strong>หมายเหตุ ตารางที่ 15, 17, 18, 19</strong> — การวิเคราะห์ t-test, One-way ANOVA และ Multiple Linear Regression (ค่า B, β, p-value ที่แม่นยำ) ต้องใช้โปรแกรม SPSS หรือ R
+                                    กรุณาส่งออกข้อมูลจาก Google Sheets ไปวิเคราะห์เพิ่มเติม
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
                 );
             };
