@@ -67,17 +67,26 @@ function doPost(e) {
     const sheet = ss.getSheetByName(SHEET_NAME);
     const data = JSON.parse(e.postData.contents);
     const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    
-    // แมปข้อมูลจาก JSON ลงให้ตรงกับหัวตาราง
+
+    // อัปเดตผล Lab ของแถวที่มีอยู่แล้ว
+    if (data.action === "update") {
+      const rowIndex = parseInt(data.rowIndex) + 2; // +2: 0-based index + header row
+      ["Lab_TC","Lab_LDL","Lab_HDL","Lab_TG","CV_Risk","Target_LDL","Control_Status"].forEach(field => {
+        const col = headers.indexOf(field) + 1;
+        if (col > 0 && data[field] !== undefined) sheet.getRange(rowIndex, col).setValue(data[field]);
+      });
+      return ContentService.createTextOutput(JSON.stringify({"status": "success"}))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // เพิ่มแถวใหม่ (submit แบบสอบถาม)
     const rowData = headers.map(header => {
       if (header === "Timestamp") return new Date();
-      // แปลง Array (Checkbox) เป็น String
       if (Array.isArray(data[header])) return data[header].join(", ");
       return data[header] || "";
     });
-    
     sheet.appendRow(rowData);
-    
+
     return ContentService.createTextOutput(JSON.stringify({"status": "success"}))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
