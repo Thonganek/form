@@ -736,7 +736,7 @@
                                 </div>
                                 <button onClick={()=>saveLabData(idx)} disabled={labSaving}
                                     className="mt-4 w-full py-3 bg-green-600 text-white rounded-xl font-bold text-lg disabled:opacity-50">
-                                    {labSaving?"กำลังบันทึก...":"💾 บันทึกผล Lab"}
+                                    {labSaving?"กำลังบันทึก...":"💾 บันทึกทั้งหมด (Lab + ข้อมูลที่แก้ไข)"}
                                 </button>
                             </div>
                             {/* Questionnaire sections */}
@@ -748,12 +748,22 @@
                                             const miss = isMiss(k);
                                             const opt = isOpt(k);
                                             const val = p[k];
+                                            const editVal = labEdit[k];
+                                            const filled = editVal !== undefined && editVal !== "";
                                             return (
-                                                <div key={k} className={`p-2 rounded-lg text-xs border ${miss?"bg-red-50 border-red-300":opt&&!val?"bg-gray-50 border-gray-200":"bg-green-50 border-green-200"}`}>
+                                                <div key={k} className={`p-2 rounded-lg text-xs border ${miss && !filled?"bg-red-50 border-red-300":opt&&!val&&!filled?"bg-gray-50 border-gray-200":"bg-green-50 border-green-200"}`}>
                                                     <div className="font-bold text-gray-400 truncate">{k}</div>
-                                                    <div className={`mt-0.5 font-semibold truncate ${miss?"text-red-600":opt&&!val?"text-gray-400":"text-gray-800"}`}>
-                                                        {val || (miss?"❌ ว่าง":"—")}
-                                                    </div>
+                                                    {miss ? (
+                                                        <input type="text"
+                                                            value={editVal !== undefined ? editVal : ""}
+                                                            onChange={e=>setLabEdit(prev=>({...prev,[k]:e.target.value}))}
+                                                            placeholder="กรอก..."
+                                                            className="w-full mt-1 p-1 border border-red-300 rounded text-xs focus:outline-none focus:border-blue-500 bg-white" />
+                                                    ) : (
+                                                        <div className={`mt-0.5 font-semibold truncate ${opt&&!val?"text-gray-400":"text-gray-800"}`}>
+                                                            {val || "—"}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         })}

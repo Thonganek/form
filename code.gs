@@ -68,12 +68,14 @@ function doPost(e) {
     const data = JSON.parse(e.postData.contents);
     const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
 
-    // อัปเดตผล Lab ของแถวที่มีอยู่แล้ว
+    // อัปเดตข้อมูลในแถวที่มีอยู่แล้ว (Lab + ข้อมูลที่แก้ไข)
     if (data.action === "update") {
       const rowIndex = parseInt(data.rowIndex) + 2; // +2: 0-based index + header row
-      ["Lab_TC","Lab_LDL","Lab_HDL","Lab_TG","CV_Risk","Target_LDL","Control_Status"].forEach(field => {
+      const skip = new Set(["action", "rowIndex"]);
+      Object.keys(data).forEach(field => {
+        if (skip.has(field)) return;
         const col = headers.indexOf(field) + 1;
-        if (col > 0 && data[field] !== undefined) sheet.getRange(rowIndex, col).setValue(data[field]);
+        if (col > 0) sheet.getRange(rowIndex, col).setValue(data[field]);
       });
       return ContentService.createTextOutput(JSON.stringify({"status": "success"}))
         .setMimeType(ContentService.MimeType.JSON);
