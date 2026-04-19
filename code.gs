@@ -4,10 +4,39 @@
 
 const SHEET_NAME = "SurveyData_Full";
 
+// ============================================================
+//  LINE OA Notification
+//  1. เปิด https://developers.line.biz/ → Messaging API channel
+//  2. คัดลอก "Channel access token (long-lived)" ใส่ใน LINE_TOKEN
+//  3. หา User ID ของผู้รับ: ให้ผู้รับส่งข้อความใดๆ มาที่ OA
+//     แล้วดูใน Webhook หรือใช้ https://developers.line.biz/console/
+//     เมนู "Your user ID" ใน Basic settings → ใส่ใน LINE_USER_ID
+// ============================================================
+const LINE_TOKEN   = "ใส่ Channel Access Token ของ LINE OA ที่นี่";
+const LINE_USER_ID = "ใส่ LINE User ID ของผู้รับแจ้งเตือนที่นี่";  // เริ่มด้วย U...
+
+function sendLineNotification_(text) {
+  if (LINE_TOKEN.startsWith("ใส่")) return; // ยังไม่ได้ตั้งค่า
+  try {
+    UrlFetchApp.fetch("https://api.line.me/v2/bot/message/push", {
+      method: "post",
+      contentType: "application/json",
+      headers: { "Authorization": "Bearer " + LINE_TOKEN },
+      payload: JSON.stringify({
+        to: LINE_USER_ID,
+        messages: [{ type: "text", text: text }]
+      }),
+      muteHttpExceptions: true
+    });
+  } catch(e) {
+    // ไม่หยุดการทำงานหลักถ้า LINE ล้มเหลว
+  }
+}
+
 function setupSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(SHEET_NAME);
-  
+
   if (!sheet) {
     sheet = ss.insertSheet(SHEET_NAME);
   } else {
@@ -16,7 +45,7 @@ function setupSheet() {
 
   // สร้างชุดหัวคอลัมน์ตามแบบสอบถามจริงทั้งหมด
   const headers = [
-    "Timestamp", "Consent", 
+    "Timestamp", "Consent",
     // ส่วนที่ 1
     "Gender", "Age", "Age_Group", "Education", "Occupation", "Occupation_Other", "Income", "Marital",
     "Weight", "Height", "BMI", "Waist", "BMI_Group", "Duration", "Comorbidity", "Insurance", "Drugs",
@@ -53,7 +82,7 @@ function setupSheet() {
   ];
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  
+
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setFontWeight("bold");
   headerRange.setBackground("#1e3a8a");
@@ -89,6 +118,20 @@ function doPost(e) {
     });
     sheet.appendRow(rowData);
 
+    // แจ้งเตือน LINE OA
+    const totalRows = sheet.getLastRow() - 1; // จำนวนผู้เข้าร่วมทั้งหมด (ไม่นับหัวตาราง)
+    const now = Utilities.formatDate(new Date(), "Asia/Bangkok", "dd/MM/yyyy HH:mm");
+    sendLineNotification_(
+      "🔔 มีผู้เข้าร่วมวิจัยใหม่!\n" +
+      "──────────────────\n" +
+      "📅 เวลา: " + now + "\n" +
+      "👤 เพศ: " + (data.Gender || "—") + "  |  อายุ: " + (data.Age || "—") + " ปี\n" +
+      "🎓 การศึกษา: " + (data.Education || "—") + "\n" +
+      "💼 อาชีพ: " + (data.Occupation || "—") + "\n" +
+      "──────────────────\n" +
+      "📊 รวมทั้งหมด: " + totalRows + " ราย"
+    );
+
     return ContentService.createTextOutput(JSON.stringify({"status": "success"}))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
@@ -101,7 +144,7 @@ function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(ContentService.MimeType.JSON);
-  
+
   const data = sheet.getDataRange().getValues();
   if (data.length <= 1) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(ContentService.MimeType.JSON);
 
